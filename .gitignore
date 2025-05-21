@@ -1,0 +1,20 @@
+ # Ignore macOS system files
+ .DS_Store
+ Thumbs.db
+
+ # Node.js dependencies
+ node_modules/
+
+ # Build output
+ dist/
+
+ # Temporary files
+ *.log
+ npm-debug.log*
+
+ # Editor directories and files
+ .vscode/
+ .idea/
+
+ # Archive files
+ *.zip

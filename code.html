@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Interactive Sound & Vision Canvas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script> {/* For Body Pose Recorder part */}
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script> {/* For Theremin/Harp part */}
+
+    <style>
+        body { display: flex; flex-direction: column; justify-content: flex-start; align-items: center; min-height: 100vh; background-color: #10101a; /* Slightly lighter dark */ color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; -webkit-tap-highlight-color: transparent; }
+        #video-container { position: relative; width: 90%; max-width: 600px; aspect-ratio: 4/3; overflow: hidden; border-radius: 0.5rem; box-shadow: 0 8px 20px -2px rgba(0,0,0,0.3); margin-bottom: 0.5rem; border: 1px solid #333; }
+        #cameraFeed { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+        #outputCanvas, #interactionOverlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); } /* Combined from previous versions */
+        #controlsContainer, #soundControls { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; width:90%; max-width: 600px;}
+        .control-group { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 0.5rem; padding: 0.5rem; background-color: rgba(45, 55, 72, 0.8); border-radius: 0.375rem; margin-bottom:0.3rem; width: 100%; backdrop-filter: blur(3px); }
+        .button-row button, .control-group button { background-color: #4A5568; hover:bg-indigo-600; color: white; padding: 8px 12px; border: none; border-radius: 0.375rem; font-size: 0.8rem; margin: 2px 4px; cursor: pointer; transition: background-color 0.2s, transform 0.1s; }
+        .button-row button:hover, .control-group button:hover { background-color: #5A6578; }
+        .button-row button:active, .control-group button:active { transform: scale(0.95); }
+        .button-row button:disabled, .control-group button:disabled { background-color: #2D3748; color: #718096; cursor: not-allowed; }
+        .button-row button.recording { background-color: #E53E3E; hover:bg-red-700;}
+        .button-row button.playing { background-color: #38A169; hover:bg-green-700;}
+        .mode-buttons button.active { background-color: #4C51BF; font-weight: bold; box-shadow: 0 0 8px #4C51BF; }
+        .kaleidoscope-controls, .tracer-control { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 5px; font-size: 0.8rem; color: #CBD5E0; }
+        .kaleidoscope-controls input[type="checkbox"], .tracer-control input[type="checkbox"] { margin-right: 5px; accent-color: #6366F1;}
+        .kaleidoscope-controls input[type="range"], .tracer-control input[type="range"] { width: 100px; accent-color: #6366F1; }
+        #messageBox { margin-top: 0.25rem; padding: 0.5rem; background-color: rgba(30, 41, 59, 0.8); color: #CBD5E0; border-radius: 0.25rem; min-height: 2.5em; font-size: 0.8rem; text-align: center; width: 100%; line-height: 1.3; backdrop-filter: blur(3px);}
+        html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+        .hidden { display: none; }
+        select { background-color: #2D3748; color: white; border: 1px solid #4A5568; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; }
+    </style>
+</head>
+<body class="pt-2 px-2">
+    <h1 class="text-xl font-bold mb-2">Interactive Sound & Vision Canvas</h1>
+    
+    <div id="video-container">
+        <video id="cameraFeed" autoplay playsinline></video>
+        <canvas id="outputCanvas"></canvas> {/* For pose recorder visuals */}
+        <canvas id="interactionOverlay"></canvas> {/* For theremin/harp visuals, separate to avoid clearing issues */}
+    </div>
+
+    <div id="appModeSelector" class="control-group">
+        <label for="mainModeSelect" class="text-sm mr-2">Mode:</label>
+        <select id="mainModeSelect">
+            <option value="theremin_harp">Theremin/Harp</option>
+            <option value="pose_recorder">Body Pose Recorder</option>
+        </select>
+    </div>
+
+    {/* Controls for Theremin/Harp */}
+    <div id="soundControls" class="controlsContainer">
+        <div class="control-group">
+            <div id="handTrackingToggleContainer" class="flex items-center">
+                <input type="checkbox" id="handTrackingMasterToggle" class="mr-2 w-4 h-4">
+                <label for="handTrackingMasterToggle" class="text-xs font-medium">Enable Hand Tracking</label>
+            </div>
+            <div id="handModeSelection" class="mode-buttons hidden mt-1"> 
+                <button id="thereminModeButton" class="py-1 px-3 rounded text-xs">Theremin</button>
+                <button id="harpModeButton" class="py-1 px-3 rounded text-xs">Harp</button>
+            </div>
+        </div>
+        <div class="control-group tracer-control">
+            <input type="checkbox" id="tracerToggle" checked> <label for="tracerToggle" class="text-xs">Tracers</label>
+            <label for="tracerSlider" class="text-xs ml-2">Length:</label>
+            <input type="range" id="tracerSlider" min="10" max="250" value="100" class="w-24">
+        </div>
+        <button id="stopSoundButton" class="bg-red-600 hover:bg-red-700 text-white font-bold py-1 px-3 rounded-lg shadow-md text-xs">
+            Stop Sound
+        </button>
+    </div>
+
+    {/* Controls for Body Pose Recorder */}
+    <div id="poseControls" class="controlsContainer hidden">
+         <div class="button-row">
+            <button id="recordButton">Record Pose</button>
+            <button id="stopPoseButton" class="hidden">Stop</button>
+            <button id="playbackPoseButton" disabled>Playback Pose</button>
+            <button id="undoFrameButton" disabled>Undo Frame</button>
+        </div>
+        <div class="control-group kaleidoscope-controls">
+            <input type="checkbox" id="kaleidoscopeToggle">
+            <label for="kaleidoscopeToggle" class="text-xs">Kaleidoscope Playback</label>
+            <input type="range" id="symmetrySlider" min="2" max="12" value="6" disabled>
+            <span id="symmetryValue" class="text-xs">6</span>
+        </div>
+    </div>
+
+    <div id="messageBox">Initializing...</div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <script>
+    // --- Global App State & Setup ---
+    let APP_MODE = 'theremin_harp'; // 'theremin_harp' or 'pose_recorder'
+    const mainModeSelect = document.getElementById('mainModeSelect');
+    const soundControlsDiv = document.getElementById('soundControls');
+    const poseControlsDiv = document.getElementById('poseControls');
+    const messageBox = document.getElementById('messageBox');
+    
+    // Common MediaPipe and Canvas Elements
+    const videoElement = document.getElementById('cameraFeed');
+    const interactionCanvas = document.getElementById('interactionOverlay'); // For Theremin/Harp
+    const interactionCtx = interactionCanvas.getContext('2d');
+    const poseCanvas = document.getElementById('outputCanvas'); // For Pose Recorder
+    const poseCtx = poseCanvas.getContext('2d');
+
+    let lastFrameTime = performance.now();
+
+    function displayMessage(msg) { messageBox.textContent = msg; /* console.log(msg); */ }
+
+    // --- Theremin/Harp Mode Specifics ---
+    const handTrackingMasterToggle = document.getElementById('handTrackingMasterToggle');
+    const handModeSelectionDiv = document.getElementById('handModeSelection');
+    const thereminModeButton = document.getElementById('thereminModeButton');
+    const harpModeButton = document.getElementById('harpModeButton');
+    const tracerToggle = document.getElementById('tracerToggle');
+    const tracerSlider = document.getElementById('tracerSlider');
+    const stopSoundButton = document.getElementById('stopSoundButton');
+
+    let soundApp = {
+        currentOperatingMode: 'mouse', // 'mouse', 'theremin', 'harp'
+        handTrackingEnabled: false,
+        isSoundPlaying: false, 
+        tracersEnabled: true,
+        tracerLifetimeBase: 100,
+        tracers: [],
+        thereminSynth: null,
+        percussiveSynth: null, // Was harpSynth
+        reverb: null,
+        CONTROL_POINT_INDEX: 8,
+        NUM_HARP_STRINGS: 36, // Increased
+        HARP_CHROMATIC_NOTES: ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"],
+        currentHarpOctave: 3,
+        harpStrings: [],
+        lastPluckHandY: {},
+        handsMediaPipe: null
+    };
+
+    // --- Pose Recorder Mode Specifics ---
+    const recordButton = document.getElementById('recordButton');
+    const stopPoseButton = document.getElementById('stopPoseButton');
+    const playbackPoseButton = document.getElementById('playbackPoseButton');
+    const undoFrameButton = document.getElementById('undoFrameButton');
+    const kaleidoscopeToggle = document.getElementById('kaleidoscopeToggle');
+    const symmetrySlider = document.getElementById('symmetrySlider');
+    const symmetryValueDisplay = document.getElementById('symmetryValue');
+    
+    let poseApp = {
+        isRecording: false,
+        recordedPoses: [],
+        isPlayingBack: false,
+        playbackFrameIndex: 0,
+        playbackLoopId: null,
+        kaleidoscopeModeActive: false,
+        numSymmetries: 6,
+        poseMediaPipe: null
+    };
+
+    // --- Main App Mode Switching ---
+    mainModeSelect.onchange = function() {
+        APP_MODE = this.value;
+        if (APP_MODE === 'theremin_harp') {
+            soundControlsDiv.classList.remove('hidden');
+            poseControlsDiv.classList.add('hidden');
+            interactionCanvas.style.zIndex = 1; // Bring to front
+            poseCanvas.style.zIndex = 0;
+            if (!soundApp.handsMediaPipe) initializeHandsMediaPipe(); // Initialize if not already
+            displayMessage("Theremin/Harp mode activated.");
+        } else { // pose_recorder
+            soundControlsDiv.classList.add('hidden');
+            poseControlsDiv.classList.remove('hidden');
+            interactionCanvas.style.zIndex = 0;
+            poseCanvas.style.zIndex = 1; // Bring to front
+            if (!poseApp.poseMediaPipe) initializePoseMediaPipe(); // Initialize if not already
+            displayMessage("Body Pose Recorder mode activated.");
+        }
+        // Reset any active states from the other mode
+        if (soundApp.isSoundPlaying) stopAllSoundVisualsAndAudio();
+        if (poseApp.isPlayingBack || poseApp.isRecording) stopPoseRecordingOrPlayback();
+    };
+
+
+    // --- Initialization functions for each mode's MediaPipe ---
+    function initializeHandsMediaPipe() {
+        if (soundApp.handsMediaPipe) return; // Already initialized
+        soundApp.handsMediaPipe = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        soundApp.handsMediaPipe.setOptions({maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.55, minTrackingConfidence: 0.55 });
+        soundApp.handsMediaPipe.onResults(onHandResults);
+        console.log("Hands MediaPipe Initialized");
+    }
+
+    function initializePoseMediaPipe() {
+        if (poseApp.poseMediaPipe) return; // Already initialized
+        poseApp.poseMediaPipe = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+        poseApp.poseMediaPipe.setOptions({modelComplexity: 1, smoothLandmarks: true, enableSegmentation: false, smoothSegmentation: false, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5});
+        poseApp.poseMediaPipe.onResults(onPoseResults);
+        console.log("Pose MediaPipe Initialized");
+    }
+
+
+    // --- Sound Synthesis Setup (Theremin/Harp) ---
+    function setupSynths() {
+        soundApp.thereminSynth = new Tone.Synth({
+            oscillator: { type: 'sine' }, // Classic theremin
+            envelope: { attack: 0.005, decay: 0.1, sustain: 0.4, release: 0.8 }
+        }).toDestination();
+
+        soundApp.percussiveSynth = new Tone.MembraneSynth({
+            pitchDecay: 0.03, // Faster decay for more 'pluck'
+            octaves: 3,       // Fewer octaves for a more focused tone
+            oscillator: { type: "sine" }, // Cleaner tone
+            envelope: {
+                attack: 0.001, decay: 0.25, sustain: 0.01, release: 0.3,
+                attackCurve: 'exponential'
+            }
+        }).toDestination();
+        soundApp.percussiveSynth.volume.value = -8; // Initial volume
+
+        // Optional: Add a global reverb for a nicer atmosphere
+        soundApp.reverb = new Tone.Reverb({
+            decay: 1.5, // Shorter decay
+            wet: 0.2    // Subtle mix
+        }).toDestination();
+        soundApp.thereminSynth.connect(soundApp.reverb);
+        soundApp.percussiveSynth.connect(soundApp.reverb);
+        console.log("Synths and Reverb set up.");
+    }
+
+
+    // --- Theremin/Harp Functions (soundApp) ---
+    function updateSoundActiveButtonStates() {
+        thereminModeButton.classList.toggle('active', soundApp.handTrackingEnabled && soundApp.currentOperatingMode === 'theremin');
+        harpModeButton.classList.toggle('active', soundApp.handTrackingEnabled && soundApp.currentOperatingMode === 'harp');
+        if (!soundApp.handTrackingEnabled) soundApp.currentOperatingMode = 'mouse';
+    }
+
+    function playThereminSound(pitch, volume) {
+        if (Tone.context.state !== 'running' || !soundApp.thereminSynth) return false;
+        const THEREMIN_MIN_PITCH = 130.81, THEREMIN_MAX_PITCH = 1046.50;
+        const THEREMIN_MIN_VOLUME_DB = -30, THEREMIN_MAX_VOLUME_DB = -3; // Max volume slightly less than 0dB
+
+        pitch = Math.max(THEREMIN_MIN_PITCH, Math.min(THEREMIN_MAX_PITCH, pitch));
+        volume = Math.max(THEREMIN_MIN_VOLUME_DB, Math.min(THEREMIN_MAX_VOLUME_DB, volume));
+        
+        soundApp.thereminSynth.frequency.rampTo(pitch, 0.05);
+        soundApp.thereminSynth.volume.rampTo(volume, 0.05);
+
+        if (!soundApp.isSoundPlaying) { 
+            soundApp.thereminSynth.triggerAttack(pitch, Tone.now()); 
+            soundApp.isSoundPlaying = true; 
+        }
+        displayMessage(`Theremin: P ${pitch.toFixed(0)}Hz, V ${volume.toFixed(1)}dB`);
+        return true;
+    }
+
+    function playPercussiveSound(stringIndex, velocity = 0.7) {
+        if (Tone.context.state !== 'running' || !soundApp.percussiveSynth) { return; }
+        if (stringIndex < 0 || stringIndex >= soundApp.harpStrings.length) return;
+
+        const noteToPlay = soundApp.harpStrings[stringIndex].note;
+        if (!noteToPlay || typeof noteToPlay !== 'string' || noteToPlay.length < 2) return; 
+
+        // Map flick velocity (0.0 to ~2.0+) to synth velocity (0.1 to 1.0 for Tone.js)
+        // And then map that to volume.
+        let effectiveVelocity = Math.min(1.0, Math.max(0.1, velocity * 0.5)); // Scale and clamp
+        let targetVolumeDb = Tone.gainToDb(effectiveVelocity * 0.7 + 0.05); // Map to gain, then dB (0.05 to 0.75 gain)
+                                                                       // Ensure it's not too quiet or too loud
+        targetVolumeDb = Math.max(-24, Math.min(-3, targetVolumeDb)); // Clamp dB
+        
+        soundApp.percussiveSynth.volume.value = targetVolumeDb;
+
+        console.log(`INSIDE playPercussive: Playing ${noteToPlay} with gestVel ${velocity.toFixed(2)}, synthVel ${effectiveVelocity.toFixed(2)}, volDB ${targetVolumeDb.toFixed(1)}`);
+        
+        try {
+            soundApp.percussiveSynth.triggerAttackRelease(noteToPlay, "2n", Tone.now(), effectiveVelocity); // "2n" for longer decay potential
+        } catch (e) { console.error("Tone.js percussiveSynth.triggerAttackRelease ERROR:", e); }
+        
+        soundApp.harpStrings[stringIndex].highlightTime = soundApp.tracerLifetimeBase / 1.5; // Longer highlight
+        if(soundApp.tracersEnabled) addSoundTracer(soundApp.harpStrings[stringIndex].xPos * interactionCanvas.width, 0, 'harp_streamer', noteToPlay, effectiveVelocity);
+        displayMessage(`Harp: ${noteToPlay} (Oct ${soundApp.currentHarpOctave}) Vel: ${effectiveVelocity.toFixed(2)}`);
+    }
+
+    function stopAllSoundVisualsAndAudio(source = "Button") { // Renamed for clarity
+        if(soundApp.thereminSynth) soundApp.thereminSynth.triggerRelease(Tone.now());
+        // For MembraneSynth, notes are short. If it were a synth with a long release:
+        // if (soundApp.percussiveSynth && soundApp.percussiveSynth.releaseAll) soundApp.percussiveSynth.releaseAll();
+        soundApp.isSoundPlaying = false; 
+        displayMessage(`Sound stopped (${source}). Mode: ${soundApp.currentOperatingMode}`);
+    }
+    stopSoundButton.addEventListener('click', () => stopAllSoundVisualsAndAudio());
+
+
+    function handleMouseTouchInteraction(event) {
+        if (soundApp.currentOperatingMode !== 'mouse' || APP_MODE !== 'theremin_harp') return;
+        // ... (mouse/touch theremin logic, ensure it uses soundApp.thereminSynth and adds to soundApp.tracers) ...
+        const rect = interactionCanvas.getBoundingClientRect();
+        const clientX = event.touches ? event.touches[0].clientX : event.clientX;
+        const clientY = event.touches ? event.touches[0].clientY : event.clientY;
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
+        const normX = Math.max(0, Math.min(1, x / rect.width));
+        const normY = Math.max(0, Math.min(1, y / rect.height));
+        const THEREMIN_MIN_PITCH = 130.81, THEREMIN_MAX_PITCH = 1046.50;
+        const THEREMIN_MIN_VOLUME_DB = -30, THEREMIN_MAX_VOLUME_DB = -3;
+
+        const pitch = THEREMIN_MIN_PITCH + normX * (THEREMIN_MAX_PITCH - THEREMIN_MIN_PITCH);
+        const volume = THEREMIN_MIN_VOLUME_DB + (1 - normY) * (THEREMIN_MAX_VOLUME_DB - THEREMIN_MIN_VOLUME_DB);
+        if (playThereminSound(pitch, volume) && soundApp.tracersEnabled) {
+            addSoundTracer(x, y, 'mouse_theremin');
+        }
+    }
+    interactionCanvas.addEventListener('mousemove', handleMouseTouchInteraction);
+    interactionCanvas.addEventListener('touchmove', (event) => { event.preventDefault(); handleMouseTouchInteraction(event); }, { passive: false });
+    interactionCanvas.addEventListener('mouseleave', () => { if (soundApp.currentOperatingMode === 'mouse' && soundApp.isSoundPlaying) stopAllSoundVisualsAndAudio("Mouse Left"); });
+    interactionCanvas.addEventListener('touchend', () => { if (soundApp.currentOperatingMode === 'mouse' && soundApp.isSoundPlaying) stopAllSoundVisualsAndAudio("Touch End"); });
+
+    function onHandResults(results) { // For Theremin/Harp
+        if (APP_MODE !== 'theremin_harp' || !soundApp.handTrackingEnabled) {
+            interactionCtx.clearRect(0, 0, interactionCanvas.width, interactionCanvas.height);
+            return;
+        }
+        const currentTime = performance.now();
+        const deltaTime = (currentTime - lastFrameTime) / 1000.0; 
+        lastFrameTime = currentTime;
+
+        interactionCtx.clearRect(0, 0, interactionCanvas.width, interactionCanvas.height);
+        if (soundApp.currentOperatingMode === 'harp') drawHarpStringsVisuals();
+        if (soundApp.tracersEnabled) drawSoundTracers();
+
+        if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+            if (soundApp.isSoundPlaying && soundApp.currentOperatingMode === 'theremin') stopAllSoundVisualsAndAudio("Hands Lost");
+            displayMessage(soundApp.currentOperatingMode === 'harp' ? "Harp: Awaiting 2 hands" : "Theremin: Awaiting hands");
+            return;
+        }
+        
+        results.multiHandLandmarks.forEach((landmarks, i) => {
+            const handednessLabel = results.multiHandedness[i].label;
+            const drawColor = (handednessLabel === 'Left') ? 'rgba(0, 255, 0, 0.7)' : 'rgba(0, 255, 255, 0.7)';
+            drawConnectors(interactionCtx, landmarks, HAND_CONNECTIONS, { color: drawColor, lineWidth: 3 });
+            drawLandmarks(interactionCtx, landmarks, { color: 'rgba(255,255,255,0.8)', lineWidth: 1, radius: 3 });
+        });
+
+        if (soundApp.currentOperatingMode === 'theremin') handleSoundThereminMode(results);
+        else if (soundApp.currentOperatingMode === 'harp') handleSoundHarpMode(results, deltaTime);
+    }
+    
+    function handleSoundThereminMode(results) { /* ... (Similar to before, using soundApp variables) ... */
+        let pitchHand, volumeHand;
+         const THEREMIN_MIN_PITCH = 130.81, THEREMIN_MAX_PITCH = 1046.50;
+         const THEREMIN_MIN_VOLUME_DB = -30, THEREMIN_MAX_VOLUME_DB = -3;
+
+        if (results.multiHandLandmarks.length === 1) { 
+            pitchHand = volumeHand = results.multiHandLandmarks[0];
+            const ctrlPt = pitchHand[soundApp.CONTROL_POINT_INDEX];
+            const normX = 1.0 - ctrlPt.x; 
+            const normY = ctrlPt.y;
+            if(playThereminSound(
+                THEREMIN_MIN_PITCH + normX * (THEREMIN_MAX_PITCH - THEREMIN_MIN_PITCH),
+                THEREMIN_MIN_VOLUME_DB + (1 - normY) * (THEREMIN_MAX_VOLUME_DB - THEREMIN_MIN_VOLUME_DB)
+            ) && soundApp.tracersEnabled) {
+                 addSoundTracer(ctrlPt.x * interactionCanvas.width, ctrlPt.y * interactionCanvas.height, 'theremin_single');
+            }
+        } else if (results.multiHandLandmarks.length >= 2) {
+            // ... (two hand logic for theremin, assign pitchHand, volumeHand) ...
+            const hand1 = results.multiHandLandmarks[0];
+            const hand2 = results.multiHandLandmarks[1];
+            if (hand1[0].x < hand2[0].x) { pitchHand = hand1; volumeHand = hand2; } 
+            else { pitchHand = hand2; volumeHand = hand1; }
+
+            const pitchCtrlPt = pitchHand[soundApp.CONTROL_POINT_INDEX];
+            const volumeCtrlPt = volumeHand[soundApp.CONTROL_POINT_INDEX];
+            const normPitchX = 1.0 - pitchCtrlPt.x;
+            const normVolumeY = volumeCtrlPt.y; // Smaller Y is higher on screen
+
+            if(playThereminSound(
+                THEREMIN_MIN_PITCH + normPitchX * (THEREMIN_MAX_PITCH - THEREMIN_MIN_PITCH),
+                THEREMIN_MIN_VOLUME_DB + (1 - normVolumeY) * (THEREMIN_MAX_VOLUME_DB - THEREMIN_MIN_VOLUME_DB)
+            ) && soundApp.tracersEnabled) {
+                addSoundTracer(pitchCtrlPt.x * interactionCanvas.width, pitchCtrlPt.y * interactionCanvas.height, 'theremin_pitch_hand');
+                addSoundTracer(volumeCtrlPt.x * interactionCanvas.width, volumeCtrlPt.y * interactionCanvas.height, 'theremin_volume_hand');
+            }
+        } else {
+             if (soundApp.isSoundPlaying) stopAllSoundVisualsAndAudio("Theremin Hands Lost");
+        }
+    }
+    function handleSoundHarpMode(results, deltaTime) { /* ... (Similar to before, using soundApp variables) ... */
+        if (results.multiHandLandmarks.length < 2) {
+            displayMessage("Harp Mode: Requires two hands."); return;
+        }
+        // ... (octave and pluck logic, calling playPercussiveSound)
+        const hand1 = results.multiHandLandmarks[0];
+        const hand2 = results.multiHandLandmarks[1];
+        let octaveHand, pluckHand, pluckHandId;
+
+        if (hand1[0].x > hand2[0].x) { 
+            octaveHand = hand1; pluckHand = hand2; pluckHandId = results.multiHandedness[1].index; 
+        } else {
+            octaveHand = hand2; pluckHand = hand1; pluckHandId = results.multiHandedness[0].index; 
+        }
+
+        const octaveNormY = octaveHand[0].y; 
+        soundApp.currentHarpOctave = 2 + Math.floor((1 - octaveNormY) * 3); 
+        soundApp.currentHarpOctave = Math.max(2, Math.min(5, soundApp.currentHarpOctave)); // Extended max octave slightly
+        updateHarpStringNotesVisuals(); 
+
+        const pluckCtrlPt = pluckHand[soundApp.CONTROL_POINT_INDEX]; 
+        const pluckNormX = 1.0 - pluckCtrlPt.x; 
+        const selectedStringIndex = Math.floor(pluckNormX * soundApp.NUM_HARP_STRINGS);
+
+        const currentPluckHandY = pluckCtrlPt.y;
+        const prevPluckHandY = soundApp.lastPluckHandY[pluckHandId] || currentPluckHandY;
+        
+        let ySpeed = 0;
+        if (deltaTime > 0.001 && deltaTime < 0.2) { ySpeed = (currentPluckHandY - prevPluckHandY) / deltaTime;  }
+
+        const PLUCK_SPEED_THRESHOLD = 0.2; // Tuned for more sensitivity
+        
+        // console.log(`Harp Detect: Speed=${ySpeed.toFixed(2)}, SelStr=${selectedStringIndex}`);
+
+        if (ySpeed > PLUCK_SPEED_THRESHOLD && selectedStringIndex >= 0 && selectedStringIndex < soundApp.NUM_HARP_STRINGS) {
+            playPercussiveSound(selectedStringIndex, ySpeed); // Pass raw speed
+        }
+        soundApp.lastPluckHandY[pluckHandId] = currentPluckHandY;
+        
+        if (selectedStringIndex >= 0 && selectedStringIndex < soundApp.NUM_HARP_STRINGS) {
+             interactionCtx.fillStyle = "rgba(255, 223, 0, 0.15)"; // Brighter selected string highlight
+             interactionCtx.fillRect(soundApp.harpStrings[selectedStringIndex].xPos * interactionCanvas.width - 2, 0, 4, interactionCanvas.height);
+        }
+        displayMessage(`Harp Oct: ${soundApp.currentHarpOctave}. L(Y):Oct, R(X):Sel, R(FlickDn):Play (Spd:${ySpeed.toFixed(1)})`);
+    }
+
+    function updateHarpStringNotesVisuals() { /* ... (uses soundApp.harpStrings) ... */
+        for (let i = 0; i < soundApp.NUM_HARP_STRINGS; i++) {
+            const noteIndex = i % soundApp.HARP_CHROMATIC_NOTES.length;
+            const octaveOffset = Math.floor(i / soundApp.HARP_CHROMATIC_NOTES.length);
+            soundApp.harpStrings[i].note = soundApp.HARP_CHROMATIC_NOTES[noteIndex] + (soundApp.currentHarpOctave + octaveOffset);
+            soundApp.harpStrings[i].isNatural = !soundApp.HARP_CHROMATIC_NOTES[noteIndex].includes("#");
+        }
+    }
+    function initializeHarpStringsVisuals() { /* ... (uses soundApp.harpStrings) ... */
+        soundApp.harpStrings.length = 0; 
+        for (let i = 0; i < soundApp.NUM_HARP_STRINGS; i++) {
+            soundApp.harpStrings.push({
+                xPos: (i + 0.5) / soundApp.NUM_HARP_STRINGS, note: '', highlightTime: 0, isNatural: true 
+            });
+        }
+        updateHarpStringNotesVisuals(); 
+    }
+    function drawHarpStringsVisuals() { /* ... (uses soundApp.harpStrings and interactionCtx) ... */
+        soundApp.harpStrings.forEach((str) => {
+            interactionCtx.lineWidth = str.highlightTime > 0 ? 4 : (str.isNatural ? 2 : 1); 
+            interactionCtx.strokeStyle = str.highlightTime > 0 ? "rgba(255, 255, 100, 0.9)" : (str.isNatural ? "rgba(200, 200, 230, 0.5)" : "rgba(160, 160, 190, 0.4)"); 
+            interactionCtx.beginPath();
+            interactionCtx.moveTo(str.xPos * interactionCanvas.width, 0);
+            interactionCtx.lineTo(str.xPos * interactionCanvas.width, interactionCanvas.height);
+            interactionCtx.stroke();
+            if (str.highlightTime > 0) str.highlightTime -= 2; // Faster fade for highlight
+        });
+    }
+    
+    tracerToggle.onchange = () => soundApp.tracersEnabled = tracerToggle.checked;
+    tracerSlider.addEventListener('input', (e) => soundApp.tracerLifetimeBase = parseInt(e.target.value));
+    
+    function addSoundTracer(x, y, type, data = null, velocity = 0.5) { /* ... (uses soundApp.tracers) ... */
+        let baseSize = type === 'harp_streamer' ? 6 : 4;
+        let colorVal = type.includes('theremin') ? `0, 255, 255,` : (type==='mouse_theremin' ? `255,0,255,` : `255, 223, 0,`);
+        if (type === 'harp_streamer') {
+             baseSize = 3 + velocity * 5; // Streamer size based on velocity
+        }
+        soundApp.tracers.push({
+            x, y, type, data, opacity: 1.0,
+            vy: type === 'harp_streamer' ? 1.0 + velocity * 0.5 : 0, 
+            size: baseSize,
+            color: `rgba(${colorVal}`, 
+            lifetime: soundApp.tracerLifetimeBase * (type === 'harp_streamer' ? 1.2 : 1) // Streamers last a bit longer
+        });
+    }
+    function drawSoundTracers() { /* ... (uses soundApp.tracers and interactionCtx) ... */
+        for (let i = soundApp.tracers.length - 1; i >= 0; i--) {
+            const t = soundApp.tracers[i];
+            t.opacity = t.lifetime / (soundApp.tracerLifetimeBase * (t.type === 'harp_streamer' ? 1.2 : 1));
+            t.lifetime--;
+            
+            interactionCtx.beginPath();
+            interactionCtx.fillStyle = t.color + `${t.opacity * 0.8})`; // Slightly more transparent
+            interactionCtx.strokeStyle = t.color + `${t.opacity})`;
+            interactionCtx.lineWidth = 1;
+            
+            if (t.type === 'harp_streamer') {
+                t.y += t.vy; 
+                interactionCtx.font = `${Math.max(8, Math.floor(t.size))}px Arial`;
+                interactionCtx.fillText(t.data, t.x - t.size, t.y); 
+                // Fancy streamer particle effect (simple version)
+                for(let j=0; j < 3; j++) {
+                    interactionCtx.beginPath();
+                    interactionCtx.arc(t.x + (Math.random()-0.5)*t.size*2, t.y + 10 + (Math.random()-0.5)*t.size, t.size/3 * Math.random() * t.opacity, 0, Math.PI*2);
+                    interactionCtx.fill();
+                }
+            } else { 
+                 interactionCtx.arc(t.x, t.y, t.size + t.opacity * 8, 0, Math.PI * 2); // Larger halo
+                 interactionCtx.fill();
+            }
+
+            if (t.lifetime <= 0 || (t.type === 'harp_streamer' && t.y > interactionCanvas.height + 30)) { 
+                soundApp.tracers.splice(i, 1);
+            }
+        }
+    }
+
+
+    // --- Body Pose Recorder Functions (poseApp) ---
+    function drawSinglePoseInstanceOnPoseCanvas(landmarks, baseColor = '#00FF00', landmarkColor = '#FF0000') {
+        if (!landmarks) return;
+        drawConnectors(poseCtx, landmarks, POSE_CONNECTIONS, {color: baseColor, lineWidth: 5}); // Thicker lines
+        drawLandmarks(poseCtx, landmarks, {color: landmarkColor, radius: 5, lineWidth: 2}); // Bigger dots
+    }
+
+    function drawPoseOnPoseCanvas(landmarks) { /* ... (uses poseCtx, poseApp.kaleidoscopeModeActive, poseApp.numSymmetries) ... */
+        if (!landmarks) return;
+        poseCtx.save();
+        poseCtx.clearRect(0, 0, poseCanvas.width, poseCanvas.height);
+
+        if (poseApp.isPlayingBack && poseApp.kaleidoscopeModeActive) {
+            const centerX = poseCanvas.width / 2;
+            const centerY = poseCanvas.height / 2;
+            const angleStep = 360 / poseApp.numSymmetries;
+
+            for (let i = 0; i < poseApp.numSymmetries; i++) {
+                poseCtx.save();
+                poseCtx.translate(centerX, centerY);
+                poseCtx.rotate(i * angleStep * Math.PI / 180);
+                poseCtx.translate(-centerX, -centerY);
+                
+                let hue = (i * (360 / (poseApp.numSymmetries*1.5))) % 360; // More color variation
+                let reflectionColor = `hsl(${hue}, 90%, 60%)`;
+                let reflectionLandmarkColor = `hsl(${(hue + 40)%360}, 100%, 75%)`;
+
+                drawSinglePoseInstanceOnPoseCanvas(landmarks, reflectionColor, reflectionLandmarkColor);
+                poseCtx.restore();
+            }
+        } else {
+             drawSinglePoseInstanceOnPoseCanvas(landmarks);
+        }
+        poseCtx.restore();
+    }
+    
+    function onPoseResults(results) { // For Pose Recorder
+         if (APP_MODE !== 'pose_recorder') {
+            poseCtx.clearRect(0, 0, poseCanvas.width, poseCanvas.height);
+            return;
+        }
+        if (!poseApp.isPlayingBack) { 
+            if (results.poseLandmarks) {
+                drawPoseOnPoseCanvas(results.poseLandmarks);
+                if (poseApp.isRecording) {
+                    poseApp.recordedPoses.push(deepCopyLandmarks(results.poseLandmarks));
+                    displayMessage(`Recording Pose... Frames: ${poseApp.recordedPoses.length}`);
+                    undoFrameButton.disabled = false;
+                } else {
+                   displayMessage("Live pose detected.");
+                }
+            } else {
+                if (!poseApp.isRecording) {
+                   poseCtx.clearRect(0, 0, poseCanvas.width, poseCanvas.height);
+                }
+                displayMessage("No pose detected. Ensure you are fully in view.");
+            }
+        }
+    }
+
+    function stopPoseRecordingOrPlayback() { /* ... (uses poseApp variables, updates pose control buttons) ... */
+        if (poseApp.isRecording) {
+            poseApp.isRecording = false;
+            recordButton.classList.remove('recording');
+            recordButton.textContent = "Record Pose";
+            recordButton.disabled = false;
+            stopPoseButton.classList.add('hidden');
+            playbackPoseButton.disabled = poseApp.recordedPoses.length === 0;
+            undoFrameButton.disabled = poseApp.recordedPoses.length === 0; 
+            kaleidoscopeToggle.disabled = poseApp.recordedPoses.length === 0;
+            symmetrySlider.disabled = !(poseApp.kaleidoscopeModeActive && poseApp.recordedPoses.length > 0);
+            displayMessage(`Pose Recording stopped. ${poseApp.recordedPoses.length} frames captured.`);
+        } else if (poseApp.isPlayingBack) {
+            poseApp.isPlayingBack = false;
+            if (poseApp.playbackLoopId) cancelAnimationFrame(poseApp.playbackLoopId);
+            poseApp.playbackLoopId = null;
+            playbackPoseButton.textContent = "Playback Pose";
+            playbackPoseButton.disabled = poseApp.recordedPoses.length === 0;
+            recordButton.disabled = false;
+            undoFrameButton.disabled = poseApp.recordedPoses.length === 0;
+            stopPoseButton.classList.add('hidden');
+            kaleidoscopeToggle.disabled = poseApp.recordedPoses.length === 0;
+            symmetrySlider.disabled = !(poseApp.kaleidoscopeModeActive && poseApp.recordedPoses.length > 0);
+            displayMessage("Pose Playback stopped.");
+            videoElement.play().catch(e => console.warn("Error resuming video:", e));
+            if(poseApp.poseMediaPipe && videoElement.srcObject) setTimeout(() => poseApp.poseMediaPipe.send({image: videoElement}), 50);
+        }
+    }
+    recordButton.onclick = () => { /* ... (uses poseApp variables) ... */
+        if (poseApp.isPlayingBack) return; 
+        poseApp.isRecording = true;
+        poseApp.recordedPoses = [];
+        recordButton.classList.add('recording');
+        recordButton.textContent = "Recording...";
+        recordButton.disabled = true;
+        stopPoseButton.classList.remove('hidden');
+        stopPoseButton.textContent = "Stop Recording";
+        playbackPoseButton.disabled = true;
+        undoFrameButton.disabled = true;
+        kaleidoscopeToggle.disabled = true;
+        symmetrySlider.disabled = true;
+        displayMessage("Pose Recording started.");
+    };
+    stopPoseButton.onclick = stopPoseRecordingOrPlayback; // Use the shared stop function
+    
+    undoFrameButton.onclick = () => { /* ... (uses poseApp variables) ... */
+        if (poseApp.isRecording || poseApp.isPlayingBack || poseApp.recordedPoses.length === 0) return;
+        poseApp.recordedPoses.pop(); 
+        displayMessage(`${poseApp.recordedPoses.length} frames remaining. Last frame undone.`);
+        if (poseApp.recordedPoses.length === 0) {
+            undoFrameButton.disabled = true; playbackPoseButton.disabled = true; kaleidoscopeToggle.disabled = true; symmetrySlider.disabled = true;
+            poseCtx.clearRect(0, 0, poseCanvas.width, poseCanvas.height);
+        }
+    };
+    
+    function posePlaybackLoop() { /* ... (uses poseApp variables, calls drawPoseOnPoseCanvas) ... */
+        if (!poseApp.isPlayingBack || poseApp.playbackFrameIndex >= poseApp.recordedPoses.length) {
+            stopPoseButton.click(); 
+            displayMessage(`Pose Playback finished. ${poseApp.recordedPoses.length} frames.`);
+            return;
+        }
+        drawPoseOnPoseCanvas(poseApp.recordedPoses[poseApp.playbackFrameIndex]);
+        poseApp.playbackFrameIndex++;
+        poseApp.playbackLoopId = requestAnimationFrame(posePlaybackLoop); 
+    }
+
+    playbackPoseButton.onclick = () => { /* ... (uses poseApp variables, calls posePlaybackLoop) ... */
+        if (poseApp.isRecording || poseApp.recordedPoses.length === 0) return;
+        poseApp.isPlayingBack = true; poseApp.playbackFrameIndex = 0;
+        videoElement.pause(); 
+        recordButton.disabled = true; undoFrameButton.disabled = true;
+        playbackPoseButton.textContent = "Playing..."; playbackPoseButton.disabled = true; playbackPoseButton.classList.add('playing');
+        stopPoseButton.classList.remove('hidden'); stopPoseButton.textContent = "Stop Playback";
+        kaleidoscopeToggle.disabled = false; // Enable for playback
+        symmetrySlider.disabled = !poseApp.kaleidoscopeModeActive;
+        displayMessage(`Playing back ${poseApp.recordedPoses.length} pose frames...`);
+        posePlaybackLoop();
+    };
+
+    kaleidoscopeToggle.onchange = function() { /* ... (uses poseApp variables) ... */
+        poseApp.kaleidoscopeModeActive = this.checked;
+        symmetrySlider.disabled = !this.checked || poseApp.recordedPoses.length === 0 || poseApp.isPlayingBack || poseApp.isRecording;
+        if (poseApp.isPlayingBack && poseApp.playbackFrameIndex > 0 && poseApp.playbackFrameIndex <= poseApp.recordedPoses.length) {
+            drawPoseOnPoseCanvas(poseApp.recordedPoses[poseApp.playbackFrameIndex-1]); // Redraw current frame with new setting
+        }
+        displayMessage(`Pose Kaleidoscope ${poseApp.kaleidoscopeModeActive ? 'ON' : 'OFF'}. Symmetries: ${poseApp.numSymmetries}`);
+    };
+    symmetrySlider.oninput = function() { /* ... (uses poseApp variables) ... */
+        poseApp.numSymmetries = parseInt(this.value);
+        symmetryValueDisplay.textContent = poseApp.numSymmetries;
+         if (poseApp.isPlayingBack && poseApp.kaleidoscopeModeActive && poseApp.playbackFrameIndex > 0 && poseApp.playbackFrameIndex <= poseApp.recordedPoses.length) {
+             drawPoseOnPoseCanvas(poseApp.recordedPoses[poseApp.playbackFrameIndex-1]);
+        }
+        displayMessage(`Pose Symmetries set to ${poseApp.numSymmetries}.`);
+    };
+
+
+    // --- General Camera and Main Loop Setup ---
+    async function setupCameraAndMediaPipe() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } });
+            videoElement.srcObject = stream;
+            videoElement.onloadedmetadata = () => {
+                videoElement.play();
+                
+                // Set initial canvas sizes
+                const videoWidth = videoElement.videoWidth;
+                const videoHeight = videoElement.videoHeight;
+                interactionCanvas.width = poseCanvas.width = videoWidth;
+                interactionCanvas.height = poseCanvas.height = videoHeight;
+
+                const videoAspectRatio = videoWidth / videoHeight;
+                document.getElementById('video-container').style.aspectRatio = videoAspectRatio;
+                
+                displayMessage('Camera active. Select mode.');
+                lastFrameTime = performance.now(); 
+                
+                // Initialize the default mode's MediaPipe
+                if (APP_MODE === 'theremin_harp') initializeHandsMediaPipe();
+                else initializePoseMediaPipe();
+
+                requestAnimationFrame(mainLoop); // Start the main loop
+            };
+
+            window.addEventListener('resize', () => {
+                if (videoElement.srcObject && videoElement.videoWidth > 0) {
+                    const videoWidth = videoElement.videoWidth;
+                    const videoHeight = videoElement.videoHeight;
+                    interactionCanvas.width = poseCanvas.width = videoWidth;
+                    interactionCanvas.height = poseCanvas.height = videoHeight;
+                    const videoAspectRatio = videoWidth / videoHeight;
+                    document.getElementById('video-container').style.aspectRatio = videoAspectRatio;
+                }
+            });
+
+        } catch (err) {
+            console.error('Camera Error:', err);
+            displayMessage('Error accessing camera. Grant permission & refresh. ' + err.message);
+        }
+    }
+
+    async function mainLoop() {
+        if (videoElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !videoElement.paused && !videoElement.ended) {
+            try {
+                if (APP_MODE === 'theremin_harp' && soundApp.handsMediaPipe) {
+                    await soundApp.handsMediaPipe.send({image: videoElement});
+                } else if (APP_MODE === 'pose_recorder' && poseApp.poseMediaPipe) {
+                    await poseApp.poseMediaPipe.send({image: videoElement});
+                }
+            } catch (error) { console.error("MediaPipe Error in mainLoop:", error); }
+        }
+        requestAnimationFrame(mainLoop);
+    }
+    
+    // Audio Context and Initializations
+    async function resumeAudioAndSetup() { 
+        if (Tone.context.state !== 'running') {
+            try { 
+                await Tone.start(); 
+                console.log('Audio context started.'); 
+                setupSynths(); // Setup synths after audio context is ready
+                displayMessage('Audio ready! Select app mode.');
+
+                // Test percussive synth
+                if (soundApp.percussiveSynth && Tone.context.state === 'running') {
+                    console.log("Attempting TEST PLAY of C4 on percussiveSynth...");
+                    try {
+                        soundApp.percussiveSynth.triggerAttackRelease("C4", "8n", Tone.now(), 0.5);
+                        console.log("TEST PLAY of C4 (Membrane) supposedly triggered.");
+                    } catch (e) { console.error("ERROR during TEST PLAY (Membrane):", e); }
+                }
+            }
+            catch (e) { console.error("Audio start error:", e); displayMessage('Audio failed. Click page.'); }
+        } else { 
+            if(!soundApp.thereminSynth) setupSynths(); // Ensure synths are set up if context was already running
+            displayMessage('Audio ready. Select app mode.');
+        }
+    }
+    document.body.addEventListener('mousedown', resumeAudioAndSetup, { once: true });
+    document.body.addEventListener('touchstart', resumeAudioAndSetup, { once: true, passive: true });
+
+    // Initial UI Setup
+    mainModeSelect.value = 'theremin_harp'; // Default to sound mode
+    soundControlsDiv.classList.remove('hidden');
+    poseControlsDiv.classList.add('hidden');
+    interactionCanvas.style.zIndex = 1; 
+    poseCanvas.style.zIndex = 0;
+    
+    handTrackingMasterToggle.onchange = function() { /* ... (soundApp logic) ... */
+        soundApp.handTrackingEnabled = this.checked;
+        if (soundApp.isSoundPlaying && soundApp.currentOperatingMode === 'theremin') stopAllSoundVisualsAndAudio("Mode Switch"); 
+        if (soundApp.handTrackingEnabled) {
+            handModeSelectionDiv.classList.remove('hidden');
+            if (soundApp.currentOperatingMode === 'mouse') soundApp.currentOperatingMode = 'theremin'; 
+            displayMessage(`Hand Tracking ON. Select Theremin or Harp mode.`);
+            interactionCanvas.style.cursor = 'none';
+        } else {
+            handModeSelectionDiv.classList.add('hidden');
+            soundApp.currentOperatingMode = 'mouse';
+            displayMessage('Mouse/Touch Mode Active.');
+            interactionCanvas.style.cursor = 'crosshair';
+        }
+        interactionCtx.clearRect(0, 0, interactionCanvas.width, interactionCanvas.height); 
+        updateSoundActiveButtonStates();
+    };
+    thereminModeButton.onclick = () => { /* ... (soundApp logic) ... */
+        if (!soundApp.handTrackingEnabled) return;
+        if (soundApp.isSoundPlaying) stopAllSoundVisualsAndAudio("Mode Switch");
+        soundApp.currentOperatingMode = 'theremin';
+        displayMessage('Theremin Mode Active. Use hands for pitch/volume.');
+        updateSoundActiveButtonStates();
+    };
+    harpModeButton.onclick = () => { /* ... (soundApp logic) ... */
+         if (!soundApp.handTrackingEnabled) return;
+        soundApp.currentOperatingMode = 'harp';
+        displayMessage('Harp Mode Active. L.Hand(Y):Oct, R.Hand(X):Select, R.Hand(Flick Down):Pluck');
+        updateSoundActiveButtonStates();
+    };
+    
+    setupCameraAndMediaPipe(); // Start camera and main loop
+    initializeHarpStringsVisuals(); // Initialize harp strings data structure
+    displayMessage('Click page to enable audio, then grant camera access.');
+    updateSoundActiveButtonStates(); 
+    };
+    </script>
+</body>
+</html>
